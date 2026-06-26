@@ -4,7 +4,7 @@ import * as clack from "@clack/prompts";
 import { c } from "../ui/colors.js";
 import { buildNpxCommand } from "../utils/npxCommand.js";
 import { withMeta } from "../utils/updateCheck.js";
-import { checkSkills, type SkillsCheckResult } from "../utils/skillsManifest.js";
+import { checkSkills, type SkillDiff, type SkillsCheckResult } from "../utils/skillsManifest.js";
 import type { Example } from "./_examples.js";
 
 export const examples: Example[] = [
@@ -55,6 +55,27 @@ function runSkillsAdd(
   return spawnNpx(["skills", "add", source, ...(opts.extraArgs ?? ["--all"])], opts);
 }
 
+// Skill names are kebab-case directory names. Refuse anything that isn't one
+// before spreading it into a spawn: a corrupt or crafted lock entry (these
+// names originate as lock-file JSON keys) could otherwise smuggle a flag-like
+// (`--config=…`) or shell-special token into the command — which matters most
+// on the Windows `cmd.exe` spawn path, where arg escaping is fragile.
+const PLAIN_SKILL_NAME = /^[a-z0-9][a-z0-9._-]*$/i;
+
+function runSkillsRemove(names: string[], opts: { global: boolean }): Promise<void> {
+  const safe = names.filter((n) => PLAIN_SKILL_NAME.test(n));
+  const rejected = names.filter((n) => !PLAIN_SKILL_NAME.test(n));
+  if (rejected.length) {
+    clack.log.warn(c.warn(`Skipping unexpected skill name(s): ${rejected.join(", ")}`));
+  }
+  if (!safe.length) return Promise.resolve();
+  // `skills remove --yes` deletes the bundle dir, every agent symlink, and the
+  // lock entry non-interactively. `-g` targets the global install; without it,
+  // the project (cwd) install — we pass whichever scope detection attributed
+  // these names from, so we never reach into a scope we didn't inspect.
+  return spawnNpx(["skills", "remove", ...safe, ...(opts.global ? ["-g"] : []), "--yes"]);
+}
+
 // Use the full GitHub URL (not the `owner/repo` slug) so `skills add` git-clones
 // the repo directly at latest `main`, bypassing the skills.sh registry — which
 // can lag behind the repo. Our freshness check already resolves "latest"
@@ -89,6 +110,21 @@ export async function installAllSkills(
 
 // ── check ────────────────────────────────────────────────────────────────────
 
+/** Print a labelled list of skills (nothing if empty), each line uniformly coloured. */
+function printSkillSection(
+  result: SkillsCheckResult,
+  status: SkillDiff["status"],
+  title: string,
+  mark: string,
+  color: (s: string) => string,
+): void {
+  const items = result.skills.filter((s) => s.status === status);
+  if (!items.length) return;
+  console.log();
+  console.log(`  ${color(title)}`);
+  for (const s of items) console.log(`    ${color(`${mark} ${s.name}`)}`);
+}
+
 function renderCheck(result: SkillsCheckResult): void {
   const { summary } = result;
   console.log();
@@ -108,21 +144,18 @@ function renderCheck(result: SkillsCheckResult): void {
   const parts = [c.success(`✓ ${summary.current} current`)];
   if (summary.outdated) parts.push(c.warn(`↑ ${summary.outdated} outdated`));
   if (summary.missing) parts.push(c.dim(`◦ ${summary.missing} not installed`));
+  if (summary.removed) parts.push(c.warn(`✗ ${summary.removed} removed upstream`));
   console.log(`  ${parts.join("   ")}`);
 
-  const outdated = result.skills.filter((s) => s.status === "outdated");
-  const missing = result.skills.filter((s) => s.status === "missing");
-
-  if (outdated.length) {
-    console.log();
-    console.log(`  ${c.warn("Outdated:")}`);
-    for (const s of outdated) console.log(`    ${c.warn("↑")} ${s.name}`);
-  }
-  if (missing.length) {
-    console.log();
-    console.log(`  ${c.dim("Not installed:")}`);
-    for (const s of missing) console.log(`    ${c.dim("◦ " + s.name)}`);
-  }
+  printSkillSection(result, "outdated", "Outdated:", "↑", c.warn);
+  printSkillSection(result, "missing", "Not installed:", "◦", c.dim);
+  printSkillSection(
+    result,
+    "removed",
+    "Removed upstream (renamed or dropped — no longer published):",
+    "✗",
+    c.warn,
+  );
 
   console.log();
   if (result.updateAvailable) {
@@ -163,7 +196,8 @@ const checkCommand = defineCommand({
 const updateCommand = defineCommand({
   meta: {
     name: "update",
-    description: "Update all HyperFrames skills to the latest — installs any not yet present",
+    description:
+      "Update all HyperFrames skills to the latest — installs any not yet present, removes any no longer published",
   },
   args: {},
   async run() {
@@ -180,6 +214,32 @@ const updateCommand = defineCommand({
     } catch (err) {
       clack.log.error(c.error(`Update failed: ${(err as Error).message}`));
       process.exitCode = 1;
+      return;
+    }
+
+    // `skills add --all` never deletes, so a skill renamed or dropped upstream
+    // (e.g. graphic-overlays → talking-head-recut) would linger forever. Prune
+    // skills the lock attributes to our source that the manifest no longer
+    // ships, so `check || update` fully reconciles the install to the manifest.
+    //
+    // Safety: `removed` only ever contains skills the lock records as installed
+    // from our source (see detectRemoved) — never a user's own or another
+    // source's skills. We remove in the exact scope detection attributed from,
+    // so we never reach into a scope we didn't inspect. Best-effort: cleanup
+    // failure doesn't fail the update — the install the CI contract gates on
+    // already succeeded.
+    try {
+      const { skills, scope } = await checkSkills();
+      const removed = skills.filter((s) => s.status === "removed").map((s) => s.name);
+      if (removed.length) {
+        console.log();
+        console.log(
+          c.dim(`Removing ${removed.length} skill(s) no longer published: ${removed.join(", ")}`),
+        );
+        await runSkillsRemove(removed, { global: scope === "global" });
+      }
+    } catch (err) {
+      clack.log.warn(c.warn(`Skipped removed-skill cleanup: ${(err as Error).message}`));
     }
   },
 });
