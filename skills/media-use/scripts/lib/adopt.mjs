@@ -3,6 +3,7 @@ import { join, extname, basename } from "node:path";
 import { readManifest, appendRecord, nextId } from "./manifest.mjs";
 import { regenerateIndex } from "./index-gen.mjs";
 import { probe } from "./probe.mjs";
+import { matchTokens } from "./match.mjs";
 
 const AUDIO_EXT = new Set([".mp3", ".wav", ".ogg", ".m4a", ".aac"]);
 const IMAGE_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico"]);
@@ -94,30 +95,6 @@ export function adoptExistingAssets(projectDir) {
 
   if (adopted.length > 0) regenerateIndex(projectDir);
   return adopted;
-}
-
-// Common filler words that should never, on their own, make a filename match an
-// intent (e.g. intent "the rocket" must not adopt "the-video.mp4").
-const MATCH_STOPWORDS = new Set([
-  "the",
-  "and",
-  "for",
-  "with",
-  "from",
-  "this",
-  "that",
-  "your",
-  "our",
-]);
-
-// Split into lowercased word tokens of length >= 3, minus stopwords.
-function matchTokens(text) {
-  return new Set(
-    String(text)
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((t) => t.length >= 3 && !MATCH_STOPWORDS.has(t)),
-  );
 }
 
 // Adopt a pre-existing assets/ file only when it shares a meaningful word with
