@@ -170,13 +170,14 @@ export function useElementLifecycleOps({
         sourceFile: string;
       }>,
     ) => {
-      if (entries.length === 0) return;
+      if (entries.length === 0) return Promise.resolve();
       // Resolver shadow (telemetry-only, decoupled from cutover): record whether
       // the SDK resolves each reordered element — the reorderElements op's targets.
       onReorderShadow?.(
         entries.map((e) => readHfId(e.element)).filter((id): id is string => id != null),
       );
       const coalesceKey = `z-reorder:${entries.map((e) => e.id ?? e.selector ?? e.element.getAttribute("data-hf-id") ?? "el").join(":")}`;
+      const saves: Array<Promise<void>> = [];
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i];
         entry.element.style.zIndex = String(entry.zIndex);
@@ -192,23 +193,28 @@ export function useElementLifecycleOps({
         } catch {
           /* cross-origin or detached — skip */
         }
-        void commitPositionPatchToHtml(
-          {
-            element: entry.element,
-            id: entry.id ?? null,
-            hfId: readHfId(entry.element),
-            selector: entry.selector,
-            selectorIndex: entry.selectorIndex,
-            sourceFile: entry.sourceFile,
-          } as unknown as DomEditSelection,
-          patches,
-          {
-            label: "Reorder layers",
-            coalesceKey,
-            skipRefresh: i < entries.length - 1,
-          },
-        ).catch(() => undefined);
+        saves.push(
+          commitPositionPatchToHtml(
+            {
+              element: entry.element,
+              id: entry.id ?? null,
+              hfId: readHfId(entry.element),
+              selector: entry.selector,
+              selectorIndex: entry.selectorIndex,
+              sourceFile: entry.sourceFile,
+            } as unknown as DomEditSelection,
+            patches,
+            {
+              label: "Reorder layers",
+              coalesceKey,
+              skipRefresh: i < entries.length - 1,
+            },
+          ).catch(() => undefined),
+        );
       }
+      // Resolves once every z-index patch is persisted so a same-file timing write
+      // can be ordered after it (see applyTimelineStackingReorder callers).
+      return Promise.all(saves).then(() => undefined);
     },
     [commitPositionPatchToHtml, onReorderShadow],
   );

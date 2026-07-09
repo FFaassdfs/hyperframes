@@ -134,7 +134,7 @@ export function useTimelineEditing({
         ]);
       }
 
-      applyTimelineStackingReorder({
+      const reorderDone = applyTimelineStackingReorder({
         element,
         targetTrack: updates.track,
         stackingReorder: updates.stackingReorder,
@@ -144,7 +144,7 @@ export function useTimelineEditing({
         commit: handleDomZIndexReorderCommitRef?.current,
       });
 
-      if (!startChanged) return;
+      if (!startChanged) return reorderDone;
 
       const buildMovePatches: PersistTimelineEditInput["buildPatches"] = (original, target) => {
         return buildTimelineMoveTimingPatch(original, target, updates.start, element.duration);
@@ -171,28 +171,34 @@ export function useTimelineEditing({
           });
         });
       const needsExtension = extendRootDurationIfNeeded(updates.start + element.duration);
-      if (sdkSession && element.hfId && !needsExtension) {
-        return sdkTimingPersist(
-          element.hfId,
-          targetPath,
-          { start: updates.start },
-          sdkSession,
-          {
-            editHistory: { recordEdit },
-            writeProjectFile,
-            reloadPreview,
-            domEditSaveTimestampRef,
-            compositionPath: activeCompPath,
-            // Capture on-disk bytes as the undo `before` so undoing a timing move
-            // restores the file verbatim, not a normalized full-DOM re-emit.
-            readProjectFile: (path) => readFileContent(projectIdRef.current ?? "", path),
-          },
-          { label: "Move timeline clip", coalesceKey },
-        ).then((handled) => {
-          if (!handled) return moveFallback();
-        });
-      }
-      return moveFallback();
+      // The z-index reorder above and this timing write target the same file on
+      // separate save queues, and the timing write is a full-file overwrite. Order
+      // it after the reorder so it reads disk with the z-index already applied and
+      // can't clobber it — one ordered writer per gesture (diagonal move+restack).
+      return reorderDone.then(() => {
+        if (sdkSession && element.hfId && !needsExtension) {
+          return sdkTimingPersist(
+            element.hfId,
+            targetPath,
+            { start: updates.start },
+            sdkSession,
+            {
+              editHistory: { recordEdit },
+              writeProjectFile,
+              reloadPreview,
+              domEditSaveTimestampRef,
+              compositionPath: activeCompPath,
+              // Capture on-disk bytes as the undo `before` so undoing a timing move
+              // restores the file verbatim, not a normalized full-DOM re-emit.
+              readProjectFile: (path) => readFileContent(projectIdRef.current ?? "", path),
+            },
+            { label: "Move timeline clip", coalesceKey },
+          ).then((handled) => {
+            if (!handled) return moveFallback();
+          });
+        }
+        return moveFallback();
+      });
     },
     [
       previewIframeRef,

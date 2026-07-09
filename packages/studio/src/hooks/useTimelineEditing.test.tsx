@@ -77,7 +77,7 @@ function timelineElement(input: {
 function renderTimelineEditingHook(input: {
   timelineElements: TimelineElement[];
   iframe: HTMLIFrameElement;
-  onZIndexCommit: (entries: ZIndexEntry[]) => void;
+  onZIndexCommit: (entries: ZIndexEntry[]) => Promise<void>;
   projectId?: string | null;
   writeProjectFile?: (path: string, content: string) => Promise<void>;
   recordEdit?: (input: {
@@ -249,7 +249,7 @@ describe("useTimelineEditing timeline z-index reorder", () => {
     const { move, unmount } = renderTimelineEditingHook({
       timelineElements: [clip],
       iframe,
-      onZIndexCommit: vi.fn(),
+      onZIndexCommit: vi.fn().mockResolvedValue(undefined),
       projectId: "p1",
       writeProjectFile,
       recordEdit,
@@ -315,7 +315,7 @@ describe("useTimelineEditing timeline z-index reorder", () => {
     const { resize, unmount } = renderTimelineEditingHook({
       timelineElements: [clip],
       iframe,
-      onZIndexCommit: vi.fn(),
+      onZIndexCommit: vi.fn().mockResolvedValue(undefined),
       projectId: "p1",
       writeProjectFile,
       recordEdit,
@@ -356,7 +356,7 @@ describe("useTimelineEditing timeline z-index reorder", () => {
     ]);
     const front = timelineElement({ id: "front", track: 0, zIndex: 10 });
     const back = timelineElement({ id: "back", track: 2, zIndex: 1 });
-    const commit = vi.fn<(entries: ZIndexEntry[]) => void>();
+    const commit = vi.fn<(entries: ZIndexEntry[]) => Promise<void>>().mockResolvedValue(undefined);
     const { move, unmount } = renderTimelineEditingHook({
       timelineElements: [front, back],
       iframe,
@@ -394,7 +394,7 @@ describe("useTimelineEditing timeline z-index reorder", () => {
     ]);
     const front = timelineElement({ id: "front", track: 0, zIndex: 0 });
     const music = timelineElement({ id: "music", track: 1, zIndex: 0, tag: "audio" });
-    const commit = vi.fn<(entries: ZIndexEntry[]) => void>();
+    const commit = vi.fn<(entries: ZIndexEntry[]) => Promise<void>>().mockResolvedValue(undefined);
     const { move, unmount } = renderTimelineEditingHook({
       timelineElements: [front, music],
       iframe,
@@ -427,7 +427,7 @@ describe("useTimelineEditing timeline z-index reorder", () => {
     const front = timelineElement({ id: "front", track: 0, zIndex: 2 });
     const back = timelineElement({ id: "back", track: 1, zIndex: 1 });
     const dragged = timelineElement({ id: "dragged", track: 2, zIndex: 0 });
-    const commit = vi.fn<(entries: ZIndexEntry[]) => void>();
+    const commit = vi.fn<(entries: ZIndexEntry[]) => Promise<void>>().mockResolvedValue(undefined);
     const { move, unmount } = renderTimelineEditingHook({
       timelineElements: [front, back, dragged],
       iframe,
@@ -496,7 +496,7 @@ describe("useTimelineEditing timeline z-index reorder", () => {
   it("keeps horizontal-only drag on the timing and GSAP shift path without z-index writes", async () => {
     const iframe = createPreviewIframe([{ id: "clip", track: 0 }]);
     const clip = timelineElement({ id: "clip", track: 0, zIndex: 0 });
-    const commit = vi.fn<(entries: ZIndexEntry[]) => void>();
+    const commit = vi.fn<(entries: ZIndexEntry[]) => Promise<void>>().mockResolvedValue(undefined);
     const writeProjectFile = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
     const recordEdit = vi.fn(async () => {});
     const reloadPreview = vi.fn();
@@ -543,6 +543,69 @@ describe("useTimelineEditing timeline z-index reorder", () => {
     expect(
       fetchMock.mock.calls.some((call) => requestUrl(call[0]).includes("gsap-mutations")),
     ).toBe(true);
+
+    unmount();
+  });
+
+  it("orders the timing write after the z-index commit so a diagonal drag can't clobber the restack", async () => {
+    const iframe = createPreviewIframe([
+      { id: "clip", track: 0, style: "position: relative; z-index: 0" },
+    ]);
+    const clip = timelineElement({ id: "clip", track: 0, zIndex: 0 });
+    // Gate the z-index commit so we can observe whether the timing write waits.
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const commit = vi.fn<(entries: ZIndexEntry[]) => Promise<void>>().mockReturnValue(commitGate);
+    const writeProjectFile = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      const url = requestUrl(input);
+      if (url.includes("/api/projects/p1/files/")) {
+        return jsonResponse({
+          content: '<div id="clip" data-start="0" data-track-index="0"></div>',
+        });
+      }
+      if (url.includes("/api/projects/p1/gsap-mutations/")) return jsonResponse({ ok: true });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { move, unmount } = renderTimelineEditingHook({
+      timelineElements: [clip],
+      iframe,
+      onZIndexCommit: commit,
+      projectId: "p1",
+      writeProjectFile,
+      recordEdit: vi.fn(async () => {}),
+    });
+
+    // Diagonal drag: both a time move (start change) and a restack (z-index change).
+    let movePromise!: Promise<unknown>;
+    await act(async () => {
+      movePromise = move(clip, {
+        start: 1.25,
+        track: clip.track,
+        stackingReorder: {
+          contextKey: "root",
+          placement: { type: "onto", layerId: "layer-clip" },
+          zIndexChanges: [{ key: "clip", zIndex: 5 }],
+        },
+      });
+      await flushAsyncWork();
+    });
+
+    // The z-index commit is in flight but gated; the full-file timing write must
+    // not have run yet, or it would overwrite the file without the z-index change.
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(writeProjectFile).not.toHaveBeenCalled();
+
+    // Release the z-index commit → the timing write now proceeds, on top of it.
+    await act(async () => {
+      releaseCommit();
+      await movePromise;
+      await flushAsyncWork();
+    });
+    expect(writeProjectFile).toHaveBeenCalled();
 
     unmount();
   });

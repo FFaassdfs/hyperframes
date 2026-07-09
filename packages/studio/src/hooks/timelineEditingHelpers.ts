@@ -39,12 +39,12 @@ export function applyTimelineStackingReorder(input: {
   iframe: HTMLIFrameElement | null;
   activeCompPath: string | null;
   commit: TimelineZIndexReorderCommit | null | undefined;
-}): void {
+}): Promise<void> {
   // Audio has no visual stacking; a vertical drag on it must never write z-index.
-  if (input.element.tag === "audio") return;
+  if (input.element.tag === "audio") return Promise.resolve();
 
   const intent = input.stackingReorder ?? null;
-  if (intent == null || intent.zIndexChanges.length === 0) return;
+  if (intent == null || intent.zIndexChanges.length === 0) return Promise.resolve();
 
   // Resolve each change's live element from the change's OWN locator (the intent
   // is self-contained), falling back to the top-level element list. Sub-comp
@@ -75,7 +75,7 @@ export function applyTimelineStackingReorder(input: {
     const selector = change.selector ?? sibling?.selector;
     const selectorIndex = change.selectorIndex ?? sibling?.selectorIndex;
     const element = findLive(domId, selector, selectorIndex);
-    if (!isHTMLElement(element)) return;
+    if (!isHTMLElement(element)) return Promise.resolve();
     if (getElementZIndex(element) === change.zIndex) continue;
     commitEntries.push({
       element,
@@ -88,12 +88,13 @@ export function applyTimelineStackingReorder(input: {
     });
   }
 
-  if (commitEntries.length === 0) return;
-  input.commit?.(commitEntries);
+  if (commitEntries.length === 0) return Promise.resolve();
+  const persisted = input.commit?.(commitEntries) ?? Promise.resolve();
   const store = usePlayerStore.getState();
   for (const entry of commitEntries) {
     store.updateElement(entry.key, { zIndex: entry.zIndex, hasExplicitZIndex: true });
   }
+  return persisted;
 }
 
 /**

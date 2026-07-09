@@ -10,6 +10,8 @@ interface RecordEditInput {
   files: Record<string, { before: string; after: string }>;
 }
 
+// Resolves once the z-index patches are persisted, so a caller that also writes
+// the same file (e.g. a timing move) can order its write after this one.
 export type TimelineZIndexReorderCommit = (
   entries: Array<{
     element: HTMLElement;
@@ -19,7 +21,7 @@ export type TimelineZIndexReorderCommit = (
     selectorIndex?: number;
     sourceFile: string;
   }>,
-) => void;
+) => Promise<void>;
 
 export interface UseTimelineEditingOptions {
   projectId: string | null;
