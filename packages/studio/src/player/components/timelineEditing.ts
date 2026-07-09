@@ -4,6 +4,8 @@ import type { StackingTimelineLayer, TimelineLayerId } from "./timelineTrackOrde
 import { resolveTimelineLayerStackingMove } from "./timelineLayerDrag";
 import type { TimelineStackingElement, TimelineStackingReorderIntent } from "./timelineStacking";
 
+export { resolveTimelineGroupMove, type TimelineGroupTimingMember } from "./timelineGroupEditing";
+
 export {
   type TimelineStackingElement,
   type TimelineStackingReorderIntent,
@@ -109,7 +111,7 @@ export function resolveTimelineMove(
 
   // Stacking mode: the two axes never fight. Horizontal movement writes time
   // (nextStart); vertical movement writes z-index. Lane/overlap resolution
-  // uses the clip's authored time span, NOT the dragged start — otherwise a
+  // uses the clip's authored time span, NOT the dragged start, otherwise a
   // diagonal drag that drifts the clip out of overlap silently flips the
   // placement from "restack" to "join lane" and cancels the reorder.
   if (input.stackingElement) {
@@ -458,13 +460,13 @@ export function buildTimelineAgentPrompt({
   const elementLines = elements
     .map(
       (el) =>
-        `- #${el.id} (${el.tag}) — ${formatTime(el.start)} to ${formatTime(el.start + el.duration)}, track ${el.track}`,
+        `- #${el.id} (${el.tag}) - ${formatTime(el.start)} to ${formatTime(el.start + el.duration)}, track ${el.track}`,
     )
     .join("\n");
 
   return `Edit the following HyperFrames composition:
 
-Time range: ${formatTime(start)} — ${formatTime(end)}
+Time range: ${formatTime(start)} - ${formatTime(end)}
 
 Elements in range:
 ${elementLines || "(none)"}

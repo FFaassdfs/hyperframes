@@ -71,6 +71,8 @@ export const Timeline = memo(function Timeline({
   const {
     onMoveElement,
     onResizeElement,
+    onMoveElements,
+    onPreviewMoveElements,
     onBlockedEditAttempt,
     onSplitElement,
     onRazorSplitAll,
@@ -104,7 +106,6 @@ export const Timeline = memo(function Timeline({
   const { zoomMode, manualZoomPercent, setZoomMode, setManualZoomPercent } = useTimelineZoom();
 
   const playheadRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeTool = usePlayerStore((s) => s.activeTool);
   const [hoveredClip, setHoveredClip] = useState<string | null>(null);
@@ -152,10 +153,6 @@ export const Timeline = memo(function Timeline({
       syncShortcutHintVisibility();
     });
   }, [syncShortcutHintVisibility]);
-
-  const setContainerRef = useCallback((el: HTMLDivElement | null) => {
-    containerRef.current = el;
-  }, []);
 
   const setScrollRef = useCallback(
     (el: HTMLDivElement | null) => {
@@ -225,6 +222,8 @@ export const Timeline = memo(function Timeline({
     timelineElementsRef: expandedElementsRef,
     onMoveElement,
     onResizeElement,
+    onMoveElements,
+    onPreviewMoveElements,
     onBlockedEditAttempt,
     setShowPopover,
     setRangeSelectionRef,
@@ -434,7 +433,6 @@ export const Timeline = memo(function Timeline({
 
   return (
     <div
-      ref={setContainerRef}
       aria-label="Timeline"
       className={`relative border-t select-none h-full overflow-hidden ${activeTool === "razor" ? "cursor-crosshair" : shiftHeld ? "cursor-crosshair" : "cursor-default"}`}
       onMouseMove={(e) => {

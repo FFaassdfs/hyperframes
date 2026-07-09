@@ -47,6 +47,7 @@ export interface TimelineEditCallbacks {
     changes: TimelineGroupResizeChange[],
     options?: TimelineGroupCommitOptions,
   ) => Promise<void> | void;
+  onPreviewMoveElements?: (changes: TimelineGroupMoveChange[]) => void;
   onToggleTrackHidden?: (track: number, hidden: boolean) => Promise<void> | void;
   onToggleElementHidden?: (elementKey: string, hidden: boolean) => Promise<void> | void;
   onBlockedEditAttempt?: (element: TimelineElement, intent: BlockedTimelineEditIntent) => void;

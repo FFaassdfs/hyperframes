@@ -10,6 +10,7 @@ import {
   resolveTimelineAutoScroll,
   resolveTimelineMove,
   resolveTimelineResize,
+  resolveTimelineGroupMove,
   snapKeyframePctToBeat,
   type TimelinePromptElement,
 } from "./timelineEditing";
@@ -217,6 +218,45 @@ describe("resolveTimelineMove", () => {
         zIndexChanges: [{ key: "root-back", zIndex: 3 }],
       },
     });
+  });
+});
+
+describe("resolveTimelineGroupMove", () => {
+  it("applies an unclamped delta uniformly", () => {
+    const result = resolveTimelineGroupMove(
+      [
+        { start: 1, duration: 2 },
+        { start: 4, duration: 3 },
+      ],
+      1.25,
+    );
+
+    expect(result).toEqual({
+      delta: 1.25,
+      members: [
+        { start: 2.25, duration: 2 },
+        { start: 5.25, duration: 3 },
+      ],
+    });
+  });
+
+  it("clamps the whole group when the earliest start reaches zero", () => {
+    const result = resolveTimelineGroupMove(
+      [
+        { start: 1, duration: 2 },
+        { start: 5, duration: 3 },
+      ],
+      -3,
+    );
+
+    expect(result).toEqual({
+      delta: -1,
+      members: [
+        { start: 0, duration: 2 },
+        { start: 4, duration: 3 },
+      ],
+    });
+    expect(result.members[1]!.start - result.members[0]!.start).toBe(4);
   });
 });
 
@@ -537,7 +577,7 @@ describe("buildTimelineAgentPrompt", () => {
       prompt: "Move the title later and lower the music",
     });
 
-    expect(text).toContain("Time range: 0:01 — 0:04");
+    expect(text).toContain("Time range: 0:01 - 0:04");
     expect(text).toContain("#title (div)");
     expect(text).toContain("#music (audio)");
     expect(text).toContain("Move the title later and lower the music");

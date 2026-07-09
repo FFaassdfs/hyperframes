@@ -13,12 +13,14 @@ import { TRACK_H } from "./timelineLayout";
 import { isMusicTrack } from "../../utils/timelineInspector";
 import { mergeUserBeats } from "../../utils/beatEditing";
 import type { StackingTimelineLayer, TimelineLayerId } from "./timelineTrackOrder";
+import type { TimelineGroupMoveChange } from "../../hooks/useTimelineGroupEditing";
 import {
   buildTimelineSnapTargets,
   snapEdgesToTargets,
   snapResizeEdgeToTargets,
   type TimelineSnapKind,
 } from "./timelineSnapTargets";
+import { useTimelineClipGroupDrag } from "./useTimelineClipGroupDrag";
 
 const EMPTY_BEAT_TIMES: number[] = [];
 
@@ -83,10 +85,56 @@ interface UseTimelineClipDragInput {
     element: TimelineElement,
     updates: Pick<TimelineElement, "start" | "duration" | "playbackStart">,
   ) => Promise<void> | void;
+  onMoveElements?: (changes: TimelineGroupMoveChange[]) => Promise<void> | void;
+  onPreviewMoveElements?: (changes: TimelineGroupMoveChange[]) => void;
   onBlockedEditAttempt?: (element: TimelineElement, intent: BlockedTimelineEditIntent) => void;
   setShowPopover: (show: boolean) => void;
-  /** Stable ref to the range selection setter — wired after mount to break circular dependency. */
+  /** Stable ref to the range selection setter, wired after mount to break circular dependency. */
   setRangeSelectionRef: React.RefObject<((sel: null) => void) | null>;
+}
+
+interface TimelineMovePreview {
+  start: number;
+  track: number;
+  previewLayerId?: TimelineLayerId;
+  previewLayerIndex?: number;
+  stackingReorder?: TimelineStackingReorderIntent | null;
+}
+
+interface TimelineGroupMovePreview {
+  active: boolean;
+  previewStart: number;
+}
+
+function resolveDragPreviewPlacement(
+  drag: DraggedClipState,
+  nextMove: TimelineMovePreview,
+  groupMove: TimelineGroupMovePreview,
+): Pick<
+  DraggedClipState,
+  | "previewStart"
+  | "previewTrack"
+  | "previewLayerId"
+  | "previewLayerIndex"
+  | "previewStackingReorder"
+> {
+  if (groupMove.active) {
+    return {
+      previewStart: groupMove.previewStart,
+      previewTrack: drag.element.track,
+      previewLayerId: drag.previewLayerId,
+      previewLayerIndex: drag.previewLayerIndex,
+      previewStackingReorder: null,
+    };
+  }
+
+  return {
+    previewStart: groupMove.previewStart,
+    previewTrack: nextMove.track,
+    previewLayerId: nextMove.previewLayerId ?? drag.previewLayerId,
+    previewLayerIndex: nextMove.previewLayerIndex ?? drag.previewLayerIndex,
+    previewStackingReorder: nextMove.stackingReorder ?? null,
+  };
 }
 
 export function useTimelineClipDrag({
@@ -97,6 +145,8 @@ export function useTimelineClipDrag({
   timelineElementsRef,
   onMoveElement,
   onResizeElement,
+  onMoveElements,
+  onPreviewMoveElements,
   onBlockedEditAttempt,
   setShowPopover,
   setRangeSelectionRef,
@@ -166,10 +216,23 @@ export function useTimelineClipDrag({
   onMoveElementRef.current = onMoveElement;
   const onResizeElementRef = useRef(onResizeElement);
   onResizeElementRef.current = onResizeElement;
+  const onMoveElementsRef = useRef(onMoveElements);
+  onMoveElementsRef.current = onMoveElements;
+  const onPreviewMoveElementsRef = useRef(onPreviewMoveElements);
+  onPreviewMoveElementsRef.current = onPreviewMoveElements;
+  const selectedElementIdsRef = useRef(usePlayerStore.getState().selectedElementIds);
+  selectedElementIdsRef.current = usePlayerStore((s) => s.selectedElementIds);
 
   const clipDragScrollRaf = useRef(0);
   const clipDragPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const { previewGroupMove, commitGroupMove, clearGroupDragSessions } = useTimelineClipGroupDrag({
+    timelineElementsRef,
+    updateElement,
+    onMoveElementsRef,
+    onPreviewMoveElementsRef,
+  });
 
+  // fallow-ignore-next-line complexity
   const updateDraggedClipPreview = useCallback(
     (drag: DraggedClipState, clientX: number, clientY: number): DraggedClipState => {
       const scroll = scrollRef.current;
@@ -203,22 +266,28 @@ export function useTimelineClipDrag({
         ppsRef.current,
         { maxStart: Number.POSITIVE_INFINITY },
       );
+      const groupMove = previewGroupMove(drag.element, selectedElementIdsRef.current, snap.start);
+      const placement = resolveDragPreviewPlacement(drag, nextMove, groupMove);
       return {
         ...drag,
         started: true,
         pointerClientX: clientX,
         pointerClientY: clientY,
-        previewStart: snap.start,
-        previewTrack: nextMove.track,
-        previewLayerId: nextMove.previewLayerId ?? drag.previewLayerId,
-        previewLayerIndex: nextMove.previewLayerIndex ?? drag.previewLayerIndex,
-        previewStackingReorder: nextMove.stackingReorder ?? null,
+        ...placement,
         snapBeatTime: snap.snapKind === "beat" ? snap.snapTime : null,
         snapGuideTime: snap.snapTime,
         snapGuideKind: snap.snapKind,
       };
     },
-    [scrollRef, ppsRef, trackOrderRef, timelineLayersRef, timelineElementsRef, buildSnapTargets],
+    [
+      scrollRef,
+      ppsRef,
+      trackOrderRef,
+      timelineLayersRef,
+      timelineElementsRef,
+      buildSnapTargets,
+      previewGroupMove,
+    ],
   );
 
   const stopClipDragAutoScroll = useCallback(() => {
@@ -277,6 +346,10 @@ export function useTimelineClipDrag({
 
   const updateDraggedClipPreviewRef = useRef(updateDraggedClipPreview);
   updateDraggedClipPreviewRef.current = updateDraggedClipPreview;
+  const commitGroupMoveRef = useRef(commitGroupMove);
+  commitGroupMoveRef.current = commitGroupMove;
+  const clearGroupDragSessionsRef = useRef(clearGroupDragSessions);
+  clearGroupDragSessionsRef.current = clearGroupDragSessions;
   const syncClipDragAutoScrollRef = useRef(syncClipDragAutoScroll);
   syncClipDragAutoScrollRef.current = syncClipDragAutoScroll;
   const stopClipDragAutoScrollRef = useRef(stopClipDragAutoScroll);
@@ -360,7 +433,6 @@ export function useTimelineClipDrag({
             };
           }
         }
-
         setResizingClip((prev) =>
           prev
             ? {
@@ -467,6 +539,8 @@ export function useTimelineClipDrag({
       suppressClickRef.current = true;
       clearSuppressedClick();
 
+      if (commitGroupMoveRef.current(drag.element)) return;
+
       const hasStackingReorder =
         drag.previewStackingReorder != null && drag.previewStackingReorder.zIndexChanges.length > 0;
       const hasChanged = drag.previewStart !== drag.element.start || hasStackingReorder;
@@ -494,6 +568,7 @@ export function useTimelineClipDrag({
     window.addEventListener("pointerup", handleWindowPointerUp);
     window.addEventListener("pointercancel", handleWindowPointerUp);
     return () => {
+      clearGroupDragSessionsRef.current();
       stopClipDragAutoScrollRef.current();
       window.removeEventListener("pointermove", handleWindowPointerMove);
       window.removeEventListener("pointerup", handleWindowPointerUp);

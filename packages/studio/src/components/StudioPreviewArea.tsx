@@ -26,6 +26,11 @@ import type { BlockPreviewInfo } from "./sidebar/BlocksTab";
 import { readStudioUiPreferences } from "../utils/studioUiPreferences";
 import type { GestureRecordingState } from "./editor/GestureRecordControl";
 import { useTimelineSelectionPreviewSync } from "../hooks/useTimelineSelectionPreviewSync";
+import type { TimelineGroupMoveChange } from "../hooks/useTimelineGroupEditing";
+import {
+  formatTimelineAttributeNumber,
+  patchIframeDomTiming,
+} from "../hooks/timelineEditingHelpers";
 
 export interface StudioPreviewAreaProps {
   timelineToolbar: ReactNode;
@@ -59,6 +64,7 @@ export interface StudioPreviewAreaProps {
     element: TimelineElement,
     updates: Pick<TimelineElement, "start" | "duration" | "playbackStart">,
   ) => Promise<void> | void;
+  handleTimelineGroupMove: (changes: TimelineGroupMoveChange[]) => Promise<void> | void;
   handleToggleTrackHidden: (track: number, hidden: boolean) => Promise<void> | void;
   handleToggleElementHidden: (elementKey: string, hidden: boolean) => Promise<void> | void;
   handleBlockedTimelineEdit: (element: TimelineElement, intent: BlockedTimelineEditIntent) => void;
@@ -86,6 +92,7 @@ export function StudioPreviewArea({
   handleTimelineFileDrop,
   handleTimelineElementMove,
   handleTimelineElementResize,
+  handleTimelineGroupMove,
   handleToggleTrackHidden,
   handleToggleElementHidden,
   handleBlockedTimelineEdit,
@@ -194,11 +201,24 @@ export function StudioPreviewArea({
     [domEditSelection?.id, selectedGsapAnimations],
   );
 
+  const handleTimelineGroupMovePreview = useCallback(
+    (changes: TimelineGroupMoveChange[]) => {
+      for (const change of changes) {
+        patchIframeDomTiming(previewIframeRef.current, change.element, [
+          ["data-start", formatTimelineAttributeNumber(change.start)],
+        ]);
+      }
+    },
+    [previewIframeRef],
+  );
+
   // fallow-ignore-next-line complexity
   const timelineEditCallbacks = useMemo(
     () => ({
       onMoveElement: handleTimelineElementMove,
       onResizeElement: handleTimelineElementResize,
+      onMoveElements: handleTimelineGroupMove,
+      onPreviewMoveElements: handleTimelineGroupMovePreview,
       onToggleTrackHidden: handleToggleTrackHidden,
       onToggleElementHidden: handleToggleElementHidden,
       onBlockedEditAttempt: handleBlockedTimelineEdit,
@@ -207,7 +227,7 @@ export function StudioPreviewArea({
       onRazorSplitAll: handleRazorSplitAll,
       onDeleteAllKeyframes: () => {
         // Hold the element where it is (collapse keyframes to a static set) rather
-        // than deleting the whole animation — deleting strands a stale GSAP base
+        // than deleting the whole animation, deleting strands a stale GSAP base
         // that the next drag adds to, flinging the element off-screen.
         const anim = selectedGsapAnimations.find((a) => a.keyframes);
         if (!anim) return;
@@ -227,7 +247,7 @@ export function StudioPreviewArea({
       // absolute time (via the clip's timing basis) and let resolveKeyframeRetime
       // decide: a drop inside the tween window is a plain move (re-key tween-%); a
       // drop past the boundary (last keyframe past the end, first before the start)
-      // resizes the tween — position/duration grow so the dragged keyframe lands at
+      // resizes the tween, position/duration grow so the dragged keyframe lands at
       // the drop while every other keyframe keeps its absolute time (value+ease too).
       // fallow-ignore-next-line complexity
       onMoveKeyframe: (_elId: string, fromClipPct: number, toClipPct: number) => {
@@ -300,6 +320,8 @@ export function StudioPreviewArea({
     [
       handleTimelineElementMove,
       handleTimelineElementResize,
+      handleTimelineGroupMove,
+      handleTimelineGroupMovePreview,
       handleToggleTrackHidden,
       handleToggleElementHidden,
       handleBlockedTimelineEdit,
@@ -343,7 +365,7 @@ export function StudioPreviewArea({
             onCompositionLoadingChange={setCompositionLoading}
             onCompositionChange={(compPath) => {
               // Sync activeCompPath when user drills down via timeline double-click
-              // or navigates back via breadcrumb — keeps sidebar + thumbnails in sync.
+              // or navigates back via breadcrumb, keeps sidebar + thumbnails in sync.
               // Guard against no-op updates to prevent circular refresh cascades
               // between activeCompPath → compositionStack → onCompositionChange.
               if (compPath !== activeCompPath) {
